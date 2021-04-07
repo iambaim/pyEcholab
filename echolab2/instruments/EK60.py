@@ -3360,8 +3360,8 @@ class ek60_calibration(calibration):
                     table_mask = np.isclose(config_obj['pulse_length_table'],
                             [raw_data.pulse_length[return_indices[i]]])
                     param_data[i] = config_obj['sa_correction_table'][table_mask][0]
-            else:
-                param_data[i] = np.nan
+                else:
+                    param_data[i] = np.nan
 
         return param_data
 
