@@ -32,10 +32,10 @@
 
 """
 
-import numpy as np
-import logging
+import sys
 import struct
 import re
+import numpy as np
 from collections import OrderedDict
 from lxml import etree as ET
 from .date_conversion import nt_to_unix
@@ -44,8 +44,6 @@ from .date_conversion import nt_to_unix
 __all__ = ['SimradNMEAParser', 'SimradDepthParser', 'SimradBottomParser',
             'SimradAnnotationParser', 'SimradConfigParser', 'SimradRawParser',
             'SimradFILParser', 'SimradXMLParser', 'SimradMRUParser']
-
-log = logging.getLogger(__name__)
 
 
 class _SimradDatagramParser(object):
@@ -77,6 +75,11 @@ class _SimradDatagramParser(object):
             version   = int(data['type'][3])
 
         elif isinstance(data, str):
+            type_ = data[:3]
+            version   = int(data[3])
+
+        elif isinstance(data, unicode):
+            data = str(data)
             type_ = data[:3]
             version   = int(data[3])
 
@@ -341,7 +344,11 @@ class SimradAnnotationParser(_SimradDatagramParser):
         data['bytes_read'] = bytes_read
 
         if version == 0:
-            data['text'] = str(raw_string[self.header_size(version):].strip(b'\x00'), 'ascii', errors='replace')
+
+            if (sys.version_info.major > 2):
+                data['text'] = str(raw_string[self.header_size(version):].strip(b'\x00'), 'ascii', errors='replace')
+            else:
+                data['text'] = unicode(raw_string[self.header_size(version):].strip('\x00'), 'ascii', errors='replace')
 
         return data
 
@@ -434,7 +441,10 @@ class SimradNMEAParser(_SimradDatagramParser):
 
         if version == 0:
 
-            data['nmea_string'] = str(raw_string[self.header_size(version):].strip(b'\x00'), 'ascii', errors='replace')
+            if (sys.version_info.major > 2):
+                data['nmea_string'] = str(raw_string[self.header_size(version):].strip(b'\x00'), 'ascii', errors='replace')
+            else:
+                data['nmea_string'] = unicode(raw_string[self.header_size(version):].strip('\x00'), 'ascii', errors='replace')
 
             if self.nmea_head_re.match(data['nmea_string'][:7]) is not None:
                 data['nmea_talker'] = data['nmea_string'][1:3]
@@ -494,7 +504,7 @@ class SimradMRUParser(_SimradDatagramParser):
 
     The following methods are defined:
 
-        from_string(str):    parse a raw ER60 NMEA datagram
+        from_string(str):    parse a raw EK800 MRU datagram
                             (with leading/trailing datagram size stripped)
 
         to_string():         Returns the datagram as a raw string (including leading/trailing size fields)
@@ -518,6 +528,85 @@ class SimradMRUParser(_SimradDatagramParser):
     def _unpack_contents(self, raw_string, bytes_read, version):
         '''
         Unpacks the data in raw_string into dictionary containing MRU data
+
+        :param raw_string:
+        :type raw_string: str
+
+        :returns: None
+        '''
+
+        header_values = struct.unpack(self.header_fmt(version), raw_string[:self.header_size(version)])
+        data = {}
+
+        for indx, field in enumerate(self.header_fields(version)):
+            data[field] = header_values[indx]
+            if isinstance(data[field], bytes):
+                data[field] = data[field].decode()
+
+        data['timestamp'] = nt_to_unix((data['low_date'], data['high_date']))
+        data['timestamp'] = data['timestamp'].replace(tzinfo=None)
+        data['bytes_read'] = bytes_read
+
+        return data
+
+    def _pack_contents(self, data, version):
+
+        datagram_fmt = self.header_fmt(version)
+        datagram_contents = []
+
+        if version == 0:
+
+            for field in self.header_fields(version):
+                if isinstance(data[field], str):
+                    data[field] = data[field].encode('latin_1')
+                datagram_contents.append(data[field])
+
+        return struct.pack(datagram_fmt, *datagram_contents)
+
+
+class SimradIDXParser(_SimradDatagramParser):
+    '''
+    ER60/EK80 IDX datagram contains the following keys:
+
+
+        type:         string == 'IDX0'
+        low_date:     long uint representing LSBytes of 64bit NT date
+        high_date:    long uint representing MSBytes of 64bit NT date
+        timestamp:    datetime.datetime object of NT date, assumed to be UTC
+        ping_number:  int
+        distance :    float
+        latitude:     float
+        longitude:    float
+        file_offset:  int
+
+    The following methods are defined:
+
+        from_string(str):    parse a raw ER60/EK80 IDX datagram
+                            (with leading/trailing datagram size stripped)
+
+        to_string():         Returns the datagram as a raw string (including leading/trailing size fields)
+                            ready for writing to disk
+    '''
+
+    def __init__(self):
+        headers = {0: [('type', '4s'),
+                       ('low_date', 'L'),
+                       ('high_date', 'L'),
+                       #('dummy', 'L'),   # There are 4 extra bytes in this datagram
+                       ('ping_number', 'L'),
+                       ('distance', 'd'),
+                       ('latitude', 'd'),
+                       ('longitude', 'd'),
+                       ('file_offset', 'L'),
+                      ]
+                   }
+
+        _SimradDatagramParser.__init__(self, "IDX", headers)
+
+
+    def _unpack_contents(self, raw_string, bytes_read, version):
+        '''
+        Unpacks the data in raw_string into dictionary containing IDX data
 
         :param raw_string:
         :type raw_string: str
@@ -685,7 +774,7 @@ class SimradXMLParser(_SimradDatagramParser):
 
     freq_param_xml_map = OrderedDict({
             'Frequency':[float,'frequency',''],
-            'Gain':[float,'gain',';'],
+            'Gain':[float,'gain',''],
             'Impedance':[float,'impedance',''],
             'Phase':[float,'phase',''],
             'BeamWidthAlongship':[float,'beam_width_alongship',''],
@@ -841,10 +930,11 @@ class SimradXMLParser(_SimradDatagramParser):
                         # parse any wideband transducer calibration parameters.
                         wb_transducer_parm_nodes = transducer_node.findall('./FrequencyPar')
                         xdcr_params_wideband = {}
-                        this_params = {}
                         for node in wb_transducer_parm_nodes:
+                            this_params = {}
                             dict_to_dict(node.attrib, this_params, self.freq_param_xml_map)
                             freq = this_params['frequency']
+                            #this_params['gain'] = this_params['gain'][0]
                             this_params.pop('frequency', None)
                             xdcr_params_wideband[freq] = this_params
                         if len(xdcr_params_wideband):
@@ -856,10 +946,10 @@ class SimradXMLParser(_SimradDatagramParser):
                         dict_to_dict(transducer_map[transducer_attributes['TransducerName']],
                                 data['configuration'][channel_id], self.xdcrs_xdcr_xml_map)
 
-                #  add the header data to the config dict
-                h = root_node.find('Header')
-                dict_to_dict(h.attrib, data['configuration'][channel_id],
-                             self.header_xml_map)
+                        #  add the header data to the config dict
+                        h = root_node.find('Header')
+                        dict_to_dict(h.attrib, data['configuration'][channel_id],
+                                     self.header_xml_map)
 
             elif data['subtype'] == 'parameter':
 
@@ -1602,7 +1692,7 @@ class SimradRawParser(_SimradDatagramParser):
                 indx = self.header_size(version)
 
                 if int(data['mode']) & 0x1:
-                    data['power'] = np.fromstring(raw_string[indx:indx + block_size], dtype='int16')
+                    data['power'] = np.frombuffer(raw_string[indx:indx + block_size], dtype='int16')
                     indx += block_size
                 else:
                     data['power'] = None
@@ -1629,7 +1719,7 @@ class SimradRawParser(_SimradDatagramParser):
                 indx = self.header_size(version)
 
                 if data['data_type'] & 0b1:
-                    data['power'] = np.fromstring(raw_string[indx:indx + block_size], dtype='int16')
+                    data['power'] = np.frombuffer(raw_string[indx:indx + block_size], dtype='int16')
                     indx += block_size
                 else:
                     data['power'] = None
@@ -1665,8 +1755,6 @@ class SimradRawParser(_SimradDatagramParser):
                     #  convert and reshape the raw string data
                     data['complex'] = np.frombuffer(raw_string[indx:indx + block_size],
                             dtype=data['complex_dtype'])
-                    #data['complex'] = np.fromstring(raw_string[indx:indx + block_size],
-                    #        dtype=data['complex_dtype'])
                     data['complex'].shape = (data['count'], 2 * data['n_complex'])
                     data['complex'].dtype = np.complex64
                 else:
@@ -1702,11 +1790,11 @@ class SimradRawParser(_SimradDatagramParser):
                     datagram_contents.extend(data['power'])
 
                 if int(data['mode']) & 0x2:
-                    datagram_fmt += '%dH' % (data['count'])
+                    n_angles = data['count'] * 2
+                    datagram_fmt += '%dB' % (n_angles)
                     #  reshape the angle array for writing
-                    angles = data['angle'][:,0].astype('uint16') << 8
-                    angles = angles + data['angle'][:,1]
-                    datagram_contents.extend(angles)
+                    data['angle'].shape=(n_angles,)
+                    datagram_contents.extend(data['angle'])
 
         elif version == 3:
 
@@ -1730,11 +1818,11 @@ class SimradRawParser(_SimradDatagramParser):
 
                 if data['data_type'] & 0b0010:
                     # Add the angle data
-                    datagram_fmt += '%dH' % (data['count'])
+                    n_angles = data['count'] * 2
+                    datagram_fmt += '%dB' % (n_angles)
                     #  reshape the angle array for writing
-                    angles = data['angle'][:,0].astype('uint16') << 8
-                    angles = angles + data['angle'][:,1]
-                    datagram_contents.extend(angles)
+                    data['angle'].shape=(n_angles,)
+                    datagram_contents.extend(data['angle'])
 
                 if data['data_type'] & 0b1100:
                     # Add the complex data

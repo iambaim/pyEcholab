@@ -238,7 +238,7 @@ class EK60(object):
         self._file_channel_map = {}
 
 
-    def read_bot(self, *args, nmea=False, **kwargs):
+    def read_bot(self, read_nmea=False,  *args, **kwargs):
         """Reads .bot and .out formatted bottom detection files. ER60 Mk 1 systems
         and ES60 and ES70 systems output .out files that contain bottom detections
         and a copy of the NMEA data that is also wrtten to the .raw files. ER60 Mk II
@@ -263,7 +263,7 @@ class EK60(object):
         """
 
         # Update the kwargs with the read_nmea argument.
-        kwargs['nmea'] = nmea
+        kwargs['nmea'] = read_nmea
 
         # .bot and .out files share the same format as .raw files and are read
         # using the same methods.
@@ -1912,12 +1912,12 @@ class raw_data(ping_data):
         if self.store_angles:
             if sample_datagram['angle'].size > 0:
                 # Convert from indexed to electrical angles.
-                alongship_e = sample_datagram['angle'] \
-                    [start_sample:self.sample_count[this_ping], 1] \
-                    .astype(self.sample_dtype) * self.INDEX2ELEC
-                athwartship_e = sample_datagram['angle'] \
-                    [start_sample:self.sample_count[this_ping], 0] \
-                    .astype(self.sample_dtype) * self.INDEX2ELEC
+                alongship_e = sample_datagram['angle'][start_sample:self.sample_count[this_ping], 1].astype(self.sample_dtype)
+                alongship_e[alongship_e > 127] -= 256
+                alongship_e *= self.INDEX2ELEC
+                athwartship_e = sample_datagram['angle'][start_sample:self.sample_count[this_ping], 0].astype(self.sample_dtype)
+                athwartship_e[athwartship_e > 127] -= 256
+                athwartship_e *= self.INDEX2ELEC
 
                 # Check if we need to pad or trim our sample data.
                 sample_pad = sample_dims - athwartship_e.shape[0]
@@ -2249,7 +2249,7 @@ class raw_data(ping_data):
         """
         # If we're not given a cal object, create an empty one
         if calibration is None:
-            calibration = ek60_calibration()
+            calibration = self.get_calibration() #ek60_calibration()
 
         # Get the power data - this step also resamples and arranges the raw data.
         p_data, return_indices = self._get_power(calibration=calibration, **kwargs)
@@ -2635,13 +2635,10 @@ class raw_data(ping_data):
                     return_indices)
 
         # Compute the physical angles.
-        alongship.data[:] = (alongship.data /
-                cal_parms['angle_sensitivity_alongship'][:, np.newaxis])
+        alongship.data /= cal_parms['angle_sensitivity_alongship'][:, np.newaxis]
         alongship.data -= cal_parms['angle_offset_alongship'][:, np.newaxis]
-        athwartship.data[:] = (athwartship.data /
-                cal_parms['angle_sensitivity_athwartship'][:, np.newaxis])
-        athwartship.data -= cal_parms['angle_offset_athwartship'][:,
-                               np.newaxis]
+        athwartship.data /= cal_parms['angle_sensitivity_athwartship'][:, np.newaxis]
+        athwartship.data -= cal_parms['angle_offset_athwartship'][:, np.newaxis]
 
         # Set the data types.
         alongship.data_type = 'angles_alongship'
@@ -2902,7 +2899,8 @@ class raw_data(ping_data):
             # Calculate the thickness of samples with this sound speed.
             thickness = sample_interval * sound_speed / 2.0
             # Calculate the range vector.
-            range = (np.arange(0, num_samples) + sample_offset) * thickness
+            #range = (np.arange(0, num_samples) + sample_offset) * thickness
+            range = (np.arange(-1, num_samples-1) + sample_offset) * thickness
 
             return range
 
@@ -2916,7 +2914,8 @@ class raw_data(ping_data):
             return_indices = self.get_indices(**kwargs)
 
         # Create the processed_data object we will return.
-        p_data = processed_data(self.channel_id, self.frequency[0], None)
+        p_data = processed_data(self.channel_id,
+                self.get_frequency(unique=True)[0], None)
 
         # Populate it with time and ping number.
         p_data.ping_time = self.ping_time[return_indices].copy()
@@ -3112,10 +3111,11 @@ class raw_data(ping_data):
             gains = 10 * np.log10((cal_parms['transmit_power'] * (10**(
                 cal_parms['gain']/10.0))**2 * wavelength**2) / (16 * np.pi**2))
 
-        # Get the range for TVG calculation.  The method used depends on the
-        # hardware used to collect the data.
-        c_range = np.empty(power_data.shape, dtype=power_data.sample_dtype)
-        c_range [:,:] = power_data.range.copy()
+        # Get the range for TVG calculation.
+        c_range = np.zeros(power_data.shape, dtype=power_data.sample_dtype)
+        c_range += power_data.range
+        c_range += power_data.sample_thickness
+
         if tvg_correction:
             # For the Ex60 hardware, the corrected range is computed as:
             #   c_range = range - (2 * sample_thickness)
@@ -3136,7 +3136,8 @@ class raw_data(ping_data):
         data = (2.0 * cal_parms['absorption_coefficient'])[:,np.newaxis] * c_range
 
         # Add in power and TVG.
-        data += power_data.data + tvg
+        data += power_data.data
+        data += tvg
 
         # Subtract the applied gains.
         data -= gains[:, np.newaxis]
@@ -3147,8 +3148,9 @@ class raw_data(ping_data):
 
         # Check if we're returning linear or log values.
         if linear:
-            # Convert to linear units (use [:] to operate in-place).
-            data[:] = 10**(data / 10.0)
+            # Convert to linear units
+            data /= 10.00
+            data **= 10.0
 
         # Return the result.
         return data

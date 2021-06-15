@@ -153,6 +153,7 @@ class QViewerBase(QGraphicsView):
         self.name = 'QViewerBase'
         self.defaultCursor = Qt.CrossCursor
         self.backgroundColor = QColor(50,50,50,255)
+        self.stickyScale = (1, 1)
 
         #  define the default modifier keys
         self.panKey = Qt.Key_Alt
@@ -270,16 +271,52 @@ class QViewerBase(QGraphicsView):
         del self.scene, self.imgPixmapItem
 
 
-    def saveImage(self, filename):
+    def saveView(self, filename):
         """
-        save the rendered image to a file. You must provide the full path and
-        file name. The image type will be inferred from the file extension. Typical
-        values would be "jpg", "jpeg", or "png".
+        save the rendered *view* to a file. This is not the whole image, only the visible
+        portion as rendered in the view. The resolution of the saved image will be the same
+        as the window dimensions. You must provide the full path and file name. The image
+        type will be inferred from the file extension. Typical values would be "jpg", "jpeg",
+        or "png".
         """
 
-        pixmap = QPixmap()
-        pixmap.grabWidget(self)
+        pixmap = self.grab();
         ok = pixmap.save(filename)
+        if not ok:
+            raise IOError('Unable to save image ' + filename)
+
+
+    def saveImage(self, filename, width=None, height=None):
+        """
+        save the rendered scene to a file. This saves the entire image, marks, and lines
+        regardless of the current view. The saved image resolution will be defined by the
+        scene size but you can override that by passing a width and height. You must
+        provide the full path and file name. The image type will be inferred from the file
+        extension. Typical values would be "jpg", "jpeg", or "png".
+
+        """
+
+        if width is None:
+            width = self.scene.width()
+        if height is None:
+            height = self.scene.height()
+
+        #  create the empty image to render into and fill
+        image = QImage(width, height,QImage.Format_ARGB32)
+        image.fill(0)
+
+        #  create the painter to render the image
+        painter = QPainter(image)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+
+        #  render it
+        self.scene.render(painter)
+
+        #TODO: Need to figure out how to apply "sticky" scaling from the view.
+        #      Render to a hidden view that's the same size as the scene?
+
+        #  and save
+        ok = image.save(filename)
         if not ok:
             raise IOError('Unable to save image ' + filename)
 
@@ -508,7 +545,7 @@ class QViewerBase(QGraphicsView):
     def addPolygon(self, verts, color=[220,0,0], thickness=1.0, alpha=255,
             linestyle='=', fill=None, selectable=True, movable=False,
             selectThickness=2.0, selectColor=None, closed=True,
-            name='QIVPolygon', noadd=False):
+            name='QIVPolygon', noadd=False, isCosmetic=False):
         """
         Add an arbitrary polygon to the scene. Polygons can be open and unfilled,
         closed and unfilled, or closed and filled.
@@ -551,7 +588,7 @@ class QViewerBase(QGraphicsView):
         #  create the polygon object
         polygon = QIVPolygon(verts, color=color, thickness=thickness,
                  alpha=alpha, linestyle=linestyle, fill=fill, selectable=selectable,
-                 movable=movable, closed=closed, view=self, name=name)
+                 movable=movable, closed=closed, view=self, name=name,isCosmetic=isCosmetic)
 
         if (not noadd):
             #  add the polygon to the scene
@@ -564,7 +601,7 @@ class QViewerBase(QGraphicsView):
 
 
     def addLine(self, verts, color=[220,0,0], thickness=1.0, alpha=255,
-            linestyle='=', selectable=True, movable=True):
+            linestyle='=', selectable=True, movable=True, isCosmetic=False):
         """
         Add an arbitrary line to the scene.
 
@@ -589,7 +626,7 @@ class QViewerBase(QGraphicsView):
         #  addLine is just a simplified interface to addPolygon
         return QViewerBase.addPolygon(self, verts, color=color, thickness=thickness, alpha=alpha,
                     linestyle=linestyle, selectable=selectable, movable=movable,
-                    closed=False)
+                    closed=False, isCosmetic=isCosmetic)
 
 
     def addMark(self, position, style='+', color=[220,0,0], selectColor=[5,220,250],
@@ -774,17 +811,23 @@ class QViewerBase(QGraphicsView):
         self.isZooming = False
 
 
-    def scale(self, x, y):
+    def scale(self, x, y, sticky=False):
+        """
+        scales the scene. Set sticky to True to set a scaling ratio that persists
+        between subsequent calls.
+        """
 
-        self.isZooming = True
-        QGraphicsView.scale(self, x, y)
-        self.isZooming = False
+        if sticky:
+            self.stickyScale = (x, y)
+            QGraphicsView.scale(self, x, y)
+        else:
+            QGraphicsView.scale(self, x * self.stickyScale[0], y * self.stickyScale[1])
 
 
     def zoomToMark(self, mark, zoomLevel):
         """
         Zooms the view so it is centered on a marker given the marker object and a
-        zoom level (int).
+        zoom level.
         """
 
         #  get the center of the mark
