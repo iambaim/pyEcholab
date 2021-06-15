@@ -68,6 +68,7 @@ print(raw_data_38)
 # is populated with data from the .raw file. You can change
 # the values as needed.
 cal_obj = raw_data_38.get_calibration()
+cal_obj.transducer_draft = 50
 
 # Get Sv data.
 Sv_38 = raw_data_38.get_Sv(calibration=cal_obj, return_depth=True)
@@ -80,18 +81,32 @@ bot_detector = afsc_bot_detector.afsc_bot_detector(search_min=2,
         backstep=35)
 detected_bottom = bot_detector.detect(Sv_38)
 
-# Create an application instance.
+#  set our bottom line cosmetic properties
+detected_bottom.color = [225,200,0]
+detected_bottom.thickness = 2
+
+
 print('Plotting...')
+
+# Create an application instance.
 app = QtWidgets.QApplication([])
 
-# Create the main application window, pass our Sv data
-eg_viewer = echogram_viewer.echogram_viewer(Sv_38)
+# Create the main application window and show it
+eg_viewer = echogram_viewer.echogram_viewer()
+
+#  show the application window
+eg_viewer.show()
+
+# Set the echogram data
+eg_viewer.update_echogram(Sv_38)
 
 # Add our bottom line
-eg_viewer.add_line(detected_bottom, color=[255,255,0])
+eg_viewer.add_line(detected_bottom)
 
-# And show our window
-eg_viewer.show()
+#  save the echogram at full resolution. Curently this does not
+#  include the horizontal scaling that is appled to the sample data
+#  to reduce the vertical exaggeration of the echograms.
+#eg_viewer.save_image('test.png')
 
 # Start event processing.
 app.exec_()
