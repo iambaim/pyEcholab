@@ -286,7 +286,7 @@ class EK80(object):
                  max_sample_count=None, start_time=None, end_time=None,
                  start_ping=None, end_ping=None, frequencies=None,
                  channel_ids=None, incremental=None, start_sample=None,
-                 end_sample=None, progress_callback=None):
+                 end_sample=None, progress_callback=None, nmea=True):
         """Reads one or more Simrad EK80 .raw files and appends the data to any
         existing data. The data are ordered as read.
 
@@ -297,6 +297,7 @@ class EK80(object):
             power (bool): Controls whether power data is stored
             angles (bool): Controls whether angle data is stored
             complex (bool): Controls whether complex data is stored
+            nmea (bool): Set to True to store NMEA data
             max_sample_count (int): Specify the max sample count to read
                 if your data of interest is less than the total number of
                 samples contained in the instrument files.
@@ -399,7 +400,7 @@ class EK80(object):
             #  and read datagrams until we're done
             while not finished:
                 #  read a datagram - method returns some basic info
-                dg_info = self._read_datagram(fid)
+                dg_info = self._read_datagram(fid, nmea=nmea)
 
                 #  call progress callback if supplied
                 if (progress_callback):
@@ -486,7 +487,7 @@ class EK80(object):
         return config_datagram
 
 
-    def _read_datagram(self, fid):
+    def _read_datagram(self, fid, nmea=True):
         """Reads the next raw file datagram
 
         This method reads the next datagram from the file, storing the
@@ -527,6 +528,11 @@ class EK80(object):
         result['timestamp'] = new_datagram['timestamp']
         result['bytes_read'] = new_datagram['bytes_read']
         result['type'] = new_datagram['type']
+
+        # If this is a NMEA datagram and we're not storing them, bail
+        if not nmea and new_datagram['type'].startswith('NME'):
+            # This is a NMEA datagram and we're skipping them
+            return result
 
         # We have to process all XML parameter and environment datagrams
         # regardless of time/ping bounds. This ensures all pings have fresh
@@ -2087,10 +2093,8 @@ class raw_data(ping_data):
 
             # Convert from indexed to electrical angles.
             alongship_e = sample_datagram['angle'][start_sample:self.sample_count[this_ping], 1].astype(self.sample_dtype)
-            alongship_e[alongship_e > 127] -= 256
             alongship_e *= self.INDEX2ELEC
             athwartship_e = sample_datagram['angle'][start_sample:self.sample_count[this_ping], 0].astype(self.sample_dtype)
-            athwartship_e[athwartship_e > 127] -= 256
             athwartship_e *= self.INDEX2ELEC
 
             # Check if we need to pad or trim our sample data.
@@ -3044,8 +3048,8 @@ class raw_data(ping_data):
                         'data required to return angle data.')
 
         # Set the data type.
-        alongship.data_type = 'angles_alongship'
-        athwartship.data_type = 'angles_athwartship'
+        alongship.data_type = 'angles_alongship_e'
+        athwartship.data_type = 'angles_athwartship_e'
 
         # Apply depth and/or heave correction
         if return_depth:
@@ -3362,19 +3366,31 @@ class raw_data(ping_data):
             p_data.sample_offset = min_sample_offset
             p_data.sample_interval = sample_interval
 
-            # Add the transducer draft attribute
-            # If no transudcer mounting parameters are included in the data file, the
-            # resulting cal_parms data will be nan. Otherwise
+            # Add the transducer draft attribute. This attribute is intended to be the ultimate
+            # vertical transducer position relative to the surface. It is a combination of the
+            # transducer mounting information and transducer z offset.
+
+            #  Start with no draft
+            xdcr_draft = np.full((output.shape[0]), 0.0, dtype=np.float32)
+
+            # Add the transducer_offset_z
+            has_param = np.isfinite(cal_parms['transducer_offset_z'])
+            xdcr_draft[has_param] += cal_parms['transducer_offset_z'][has_param]
+
+            # Add the draft from the mounting - first we need to check if the data
+            # has the transducer_mounting parameter
             if (cal_parms['transducer_mounting'] is not None and
                     cal_parms['transducer_mounting'].dtype == 'O'):
-                # First check if we apply the drop keel offset
-                add_drop_keel = cal_parms['transducer_mounting'] == 'DropKeel'
-                # Zero out offset where the mounting isn't DropKeel
-                cal_parms['drop_keel_offset'][np.invert(add_drop_keel)] = 0.0
-                # Compute the draft and add the attribute
-                xdcr_draft = cal_parms['transducer_offset_z'] + cal_parms['drop_keel_offset']
-            else:
-                xdcr_draft = np.full((output.shape[0]), 0.0, dtype=np.float32)
+
+                # It does, find where the mounting is drop keel and add it
+                has_param = cal_parms['transducer_mounting'] == 'DropKeel'
+                xdcr_draft[has_param] += cal_parms['drop_keel_offset'][has_param]
+
+                # Then find where the mounting is hull mounted and add it
+                has_param = cal_parms['transducer_mounting'] == 'HullMounted'
+                xdcr_draft[has_param] += cal_parms['water_level_draft'][has_param]
+
+            # Finally, add the transducer_draft attribute to the processed data object
             p_data.add_data_attribute('transducer_draft', xdcr_draft)
 
             #data = p_data

@@ -32,59 +32,6 @@ import numpy as np
 from ..ping_data import ping_data
 
 
-def empty_like(obj, name=None, color=None, linestyle=None, thickness=None):
-    """Creates an empty line object.
-
-    empty_like creates an empty line (where data values are NaN) that
-    is the same length as the provided line or processed data object.
-    If a line object is passed, the name and color attributes are copied if not
-    explicitly provided. If a processed data object is passed the returned
-    line will have the default line attributes if not explicitly provided.
-
-    Args:
-        obj (line or ProcessedData object): The line or ProcessedData object
-        instance that is the template for the new object being created.
-        name (str): Optional name for the new line object.
-        color (): Optional color for the new line object.
-        linestyle(str): Optional linestyle is a string that defines the style of the line.
-        thickness(float): Optional thickness is a float the defines the width of the line.
-
-    Returns:
-        New empty instance of line object with name and color ether
-        copied from line object passed in or using optional parameters
-        passed to method.
-    """
-    # Create a new line object to return.
-    new_line = line(ping_time=obj.ping_time.copy())
-
-    # Check if new properties were provided, otherwise copy from original.
-    if color:
-        new_line.color = color
-    else:
-        if isinstance(obj, line):
-            new_line.color = obj.color
-    if name:
-        new_line.name = name
-    else:
-        if isinstance(obj, line):
-            new_line.name = obj.name
-    if linestyle:
-        new_line.linestyle = linestyle
-    else:
-        if isinstance(obj, line):
-            new_line.linestyle = obj.linestyle
-    if thickness:
-        new_line.thickness = thickness
-    else:
-        if isinstance(obj, line):
-            new_line.thickness = obj.thickness
-
-    # Set the data array to NaNs.
-    new_line.data = np.full(new_line.ping_time.shape[0], np.nan)
-
-    return new_line
-
-
 class line(ping_data):
     #   TODO: Review attributes in this docstring
     """The line class implements lines based on ping_time and depth/range values.
@@ -516,3 +463,167 @@ class line(ping_data):
                                                              self.ping_time[-1])
 
         return msg
+
+
+def empty_like(obj, name=None, color=None, linestyle=None, thickness=None,
+    initialize=True):
+    """Creates an empty line object with the same time values as the provided object.
+
+    empty_like creates an empty line (where data values are NaN) that is the same
+    length as the provided line or processed data object. If a line object is passed,
+    the name and color attributes are copied if not explicitly provided. If a
+    processed data object is passed the returned line will have the default line
+    attributes if not explicitly provided.
+
+    Args:
+        obj (line or processed_data object): The line or processed_data object
+            instance that is the template for the new object being created.
+        name (str): Optional name for the new line object.
+        color (): Optional color for the new line object.
+        linestyle(str): Optional linestyle is a string that defines the style of the line.
+        thickness(float): Optional thickness is a float the defines the width of the line.
+        initialize (bool): This argument is used internally to skip intializing the data
+            attribute.
+
+    Returns:
+        New empty instance of line object with name and color ether
+        copied from line object passed in or using optional parameters
+        passed to method.
+    """
+    # Create a new line object to return.
+    new_line = line(ping_time=obj.ping_time.copy())
+
+    # Check if new properties were provided, otherwise copy from original.
+    if color:
+        new_line.color = color
+    else:
+        if isinstance(obj, line):
+            new_line.color = obj.color
+    if name:
+        new_line.name = name
+    else:
+        if isinstance(obj, line):
+            new_line.name = obj.name
+    if linestyle:
+        new_line.linestyle = linestyle
+    else:
+        if isinstance(obj, line):
+            new_line.linestyle = obj.linestyle
+    if thickness:
+        new_line.thickness = thickness
+    else:
+        if isinstance(obj, line):
+            new_line.thickness = obj.thickness
+
+    # Set the data array to NaNs.
+    new_line.data = np.full(new_line.ping_time.shape[0], np.nan)
+
+    return new_line
+
+
+def like(obj, **kwargs):
+    """Creates a new line object that is a copy of the provided line.
+
+    like creates an copy of an existing line where both the ping time and data
+    values are the same. The name and color attributes are copied if not
+    explicitly provided.
+
+    Args:
+        obj (line object): The line object that is to be copied.
+        name (str): Optional name for the new line object.
+        color (): Optional color for the new line object.
+        linestyle(str): Optional linestyle is a string that defines the style of the line.
+        thickness(float): Optional thickness is a float the defines the width of the line.
+
+    Returns:
+        A copy of the provided line object
+    """
+
+    # Create a new line object that is the same as the provided line.
+    # Set the initialize leyword to False to skip initializing the data attribute.
+    new_line = empty_like(obj, initialize=False, **kwargs)
+
+    # Set the new line data attribute to a copy of the provided line's data
+    new_line.data = obj.data.copy()
+
+    return new_line
+
+
+def read_evl(evl_filename, name='evl_line', ignore_status=False, **kwargs):
+    '''read_evl will read a .evl file exported by Echoview and return a line object
+    containing the Echoview line data. Vertices that have a status other than 3 ("good")
+    will be assigned NaN.
+
+    evl_filename (string): The full path to the Echoview .evl file to read
+    name (string): name or label for the line.
+    ignore_status (bool): Set to True to ignore the .evl vertex status. Vertices in
+        Echoview .evl files are assigned a status where:
+            0 = no status
+            1 = unverified
+            2 = bad
+            3 = good
+        By default, status values less than 3 are assigned a value of NaN. Set this
+        keyword to True to assign depth values to the vertices regardeless of status.
+        Note that vertices with the special value of -10000.99 are always assigned NaN
+    color: color is a list which defines the color of the line.
+    linestyle: linestyle is a string that defines the style of the line.
+    thickness: thickness is a float the defines the width of the line.
+
+    '''
+
+    import os
+    from datetime import datetime
+
+    def convert_float(val):
+        try:
+            val = float(val)
+        except:
+            val = np.nan
+        return val
+
+    # Normalize filename and read the file
+    evl_filename = os.path.normpath(evl_filename)
+    with open(evl_filename, 'r') as infile:
+        evl_data = infile.readlines()
+
+    # Discard the file headers
+    evl_data = evl_data[2:]
+
+    #  determine the number of line vertices
+    n_pings = len(evl_data)
+
+    # Echoview .evl files contain ping time, depth, and line status data.
+    # Create the time and depth arrays. Status is used to determine if the
+    # depth data is valid or a Nan is inserted instead
+    depth_data = np.empty((n_pings), dtype=np.float32)
+    ping_time = np.empty((n_pings), dtype='datetime64[ms]')
+
+    # Loop thru the rows of data, parsing each line
+    for idx, row in enumerate(evl_data):
+        #  strip the trailing whitespace
+        row.rstrip()
+
+        # Parse the elements
+        (d, t, depth, status) = row.split(maxsplit=3)
+
+        # Use date and time strings to make numpy datetime object
+        ping_time[idx] = np.datetime64(datetime.strptime(d + t, "%Y%m%d%H%M%S%f"))
+
+        # Convert depth and status to floats
+        depth = convert_float(depth)
+        status = convert_float(status)
+
+        # Assign the depth value based on the status. For our purposes, any status
+        # less than 3 in an .evl file will be considered "bad" and assigned NaN. Also,
+        # .evl files have a special value (-10000.99000 ) used to indicate an invalid
+        # sounder detected bottom vertex and these will also be assigned NaN.
+        if status < 3 or depth < -10000.0:
+            # This is an invalid vertex
+            depth_data[idx] = np.nan
+        else:
+            depth_data[idx] = depth
+
+    # Create the line object to return
+    ev_line = line(ping_time=ping_time, data=depth_data, name=name, **kwargs)
+
+    return ev_line
